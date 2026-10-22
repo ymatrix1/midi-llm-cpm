@@ -148,8 +148,12 @@ midi-llm-cpm/
 #### A.1 Addressing Representation Bottlenecks (Grid + Microtiming + Continuous Controls)
 A coarse 24-PPQ grid alone quantizes away human groove, while raw 10ms arrival-time triplets (AMT) lose bar/beat structure and chord alignment. Inspired by **Agogic** ([Wang et al.](https://yisuanwang.github.io/Agogic/)) and **Moonbeam** ([arXiv:2505.15559](https://arxiv.org/abs/2505.15559)), we combine a **96-position metric bar grid (`24` PPQ = 20 ticks per step at 480 TPQ)** with **Per-Note Microtiming Residuals (`[MICRO_-4]`..`[MICRO_+4]`)** and **Expressive Continuous Control Tokens**:
 * **Exact Timing Reconstruction:** Each note's tick onset at `480` TPQ is reconstructed as:
-  $$\text{tick} = \text{bar\_start\_tick} + \text{POS}_p \times 20 + \text{MICRO}_m \times 2$$
-  where $m \in [-4, +4]$ spans $[-8, +8]$ ticks ($\approx \pm 8.3\text{ ms}$ at 120 BPM, reducing quantization error to **$\le 1\text{ tick} \approx 1\text{ ms}$**).
+
+  $$
+  t_{\text{onset}} = t_{\text{bar}} + 20 \cdot \text{POS}_p + 2 \cdot \text{MICRO}_m
+  $$
+
+  where $t_{\text{bar}}$ is the bar start tick and $m \in [-4, +4]$ spans $[-8, +8]$ ticks ($\approx \pm 8.3\text{ ms}$ at 120 BPM, reducing quantization error to **$\le 1\text{ tick} \approx 1\text{ ms}$**).
 * **Unbounded Bar Indexing:** Instead of a fixed `[BAR_0]..[BAR_63]` vocabulary (which overflows on songs $> 64$ bars), every bar begins with a universal **`[BAR]` boundary token** followed by a **Phrase-Relative Bar Index (`[BAR_REL_0]`..`[BAR_REL_15]`)** and optional **Section Countdown (`[BARS_LEFT_1]`..`[BARS_LEFT_16]`)**. This supports arbitrarily long arrangements without vocabulary overflow.
 * **Beat-Level Harmonic Rhythm & Inversions:** Chords are not restricted to one per bar. `[CHORD_ROOT_*] [CHORD_QUAL_*] [CHORD_BASS_*]` can be emitted at **any `[POS_p]`** within a bar (e.g., `POS_0`, `POS_24`, `POS_48`, `POS_72`), capturing multi-chord bars, syncopated harmonic anticipations, and slash-chord bass inversions.
 
@@ -232,7 +236,7 @@ Rule-based music critics can easily be **reward-hacked** by a policy collapsing 
 1. **Milestone 1 (Primary Deliverable — Zero RL Dependency):**
    * SFT + Explicit Musical Plan + Deterministic `MusicGrammarLogitsProcessor` + `LLM-CFG`. Must independently beat or match baseline metrics before any preference optimization is applied.
 2. **Milestone 2 (Calibrated Offline DPO with Anti-Collapse Guards):**
-   * **Critic Calibration:** Validate composite critic scores ($R_{\text{harmony}}, R_{\text{scale}}, R_{\text{groove}}, R_{\text{prompt\_inst}}, R_{\text{dynamics}}$) against a held-out set of **200 human/expert-ranked MIDI pairs**; tune critic weights so pairwise agreement with human raters is $\ge 75\%$.
+   * **Critic Calibration:** Validate composite critic scores ($R_{\text{harmony}}, R_{\text{scale}}, R_{\text{groove}}, R_{\text{prompt-inst}}, R_{\text{dynamics}}$) against a held-out set of **200 human/expert-ranked MIDI pairs**; tune critic weights so pairwise agreement with human raters is $\ge 75\%$.
    * **Anti-Reward-Hacking Guards:** Reject any $y_{\text{chosen}}$ candidate whose intra-song bar self-similarity exceeds `0.85` (anti-looping guard), whose note density falls outside the 10th–90th percentile of the training corpus, or whose velocity entropy $H_{\text{vel}} < 2.0$ bits.
    * Run conservative Offline `DPOTrainer` ($\beta = 0.2$, $\le 1$ epoch, low `lr = 5e-6`).
 3. **Milestone 3 (Experimental Online GRPO — Research Extension Only):**
