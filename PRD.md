@@ -28,6 +28,8 @@ The system accepts freeform natural language producer prompts (e.g., *"118 BPM n
 | **Benchmark Parity** | Evaluation on 896 MIDI-LLM Lakh IDs (`FAD` $\downarrow$ / `CLAP` $\uparrow$) | **FAD $\le 0.17$** / **CLAP $\ge 22.1$** (matching/beating MIDI-LLM 1.47B) |
 | **Hardware Envelope** | Peak Training VRAM (Local Config, `seq_len=2048`) | **$\le$ 11.2 GB** on RTX 4070 Super (12GB) |
 | **Inference Latency** | 8-Bar Multitrack Generation (4 tracks, ~1,200 tokens) | **$< 4.5$ seconds** on single RTX 4070 Super (`bfloat16` + KV Cache / vLLM) |
+| **Code Quality & Formatting** | `uv run ruff check .` & `uv run ruff format --check .` | **0 warnings / 0 errors** (100% clean) |
+| **Automated Test Coverage** | `uv run pytest --cov=src --cov-report=term-missing` | **$\ge 90\%$ line & branch coverage** across core modules |
 
 ---
 
@@ -101,11 +103,17 @@ midi-llm-cpm/
 │   ├── train_local_4070.ps1         # Windows PowerShell launcher for RTX 4070 Super
 │   └── train_local_4070.sh          # Linux/WSL2 bash launcher
 ├── tests/
+│   ├── conftest.py                  # Shared pytest fixtures (synthetic multitrack MIDIs, mock tokenizers)
+│   ├── test_vocab.py                # Verifies 512-token alignment, bijective ID mappings, AMT constants
 │   ├── test_tokenizer_roundtrip.py  # Zero-drift roundtrip & triplet/swing preservation tests
 │   ├── test_grammar_fsm.py          # Verifies FSM prevents out-of-order token generation
-│   ├── test_infilling_mask.py       # Verifies bar-interleaved & AMT infilling formatting
+│   ├── test_cleaner_and_mir.py      # Tests anti-metronome filter, 896-ID holdout, Krumhansl key detector
+│   ├── test_infilling_mask.py       # Verifies bar-interleaved & AMT infilling formatting + label=-100 mask
+│   ├── test_music_critics.py        # Tests DPO harmonic clash, scale adherence, and groove lock scorers
 │   └── test_midi_export.py          # Verifies SMF Type 1 validity, Ch 10 drums, zero hanging notes
-├── pyproject.toml
+├── .python-version                  # Pinned Python 3.11 for uv
+├── pyproject.toml                   # Unified uv, ruff, pytest, coverage, and build configuration
+├── uv.lock                          # Deterministic lockfile managed by uv
 └── README.md
 ```
 
@@ -222,9 +230,40 @@ With syntax enforced by `MusicGrammarLogitsProcessor`, DPO aligns the model towa
 
 ---
 
-## 5. VERIFICATION & TEST GATES (`tests/`)
+## 5. DEVELOPER TOOLCHAIN, LINTING & QUALITY GATES (`uv`, `ruff`, `pytest`, `coverage`)
 
-1. `tests/test_tokenizer_roundtrip.py`: Verifies `encode -> decode` roundtrip preserves exact pitch sets, $\le 1$ grid tick timing drift, and bar-interleaved ordering.
-2. `tests/test_grammar_fsm.py`: Verifies `MusicGrammarLogitsProcessor` guarantees 100% syntactically valid token sequences under random logits.
-3. `tests/test_infilling_mask.py`: Verifies stem-infilling sequence construction and loss masking (`labels = -100` on prompt/context).
-4. `tests/test_midi_export.py`: Verifies exported `.mid` files are valid SMF Type 1, assign drums to Channel 9, and contain zero hanging notes.
+### 5.1 Package & Environment Management (`uv`)
+All dependency resolution, virtual environment management, and command execution MUST use **`uv`** (`pyproject.toml` + `uv.lock`, pinned to Python `3.11`):
+* **Initialize & Sync:** `uv sync --all-extras --dev`
+* **CLI Entrypoint (`[project.scripts]`):** `midi-llm = "src.scripts.cli:app"` (or `uv run midi-llm ...`)
+* **Optional Dependency Groups:**
+  * `core`: `torch`, `transformers`, `accelerate`, `peft`, `trl`, `datasets`, `mido`, `symusic`, `numpy`, `pyyaml`, `typer`, `rich`, `tqdm`
+  * `quant`: `bitsandbytes`, `vllm` (Linux/WSL2)
+  * `audio`: `midi2audio`, `librosa`, `soundfile`, `pyloudnorm`
+  * `amt`: `anticipation` (Stanford AMT 55k compatibility)
+  * `dev`: `pytest`, `pytest-cov`, `pytest-mock`, `ruff`, `mypy`
+
+### 5.2 Linting & Formatting (`ruff`)
+Enforce strict zero-warning linting and formatting via `ruff` in `pyproject.toml`:
+* **Target Version:** `py311`, `line-length = 100`
+* **Enabled Rule Sets:** `E`, `F`, `W` (pycodestyle/pyflakes), `I` (isort), `B` (flake8-bugbear), `UP` (pyupgrade), `SIM` (flake8-simplify), `N` (pep8-naming), `C4` (comprehensions), `PT` (pytest-style), `RUF` (Ruff-specific rules).
+* **Gate Commands:**
+  ```powershell
+  uv run ruff check .
+  uv run ruff format --check .
+  ```
+
+### 5.3 Automated Testing & Code Coverage (`pytest` + `pytest-cov`)
+Configure `pytest` and `coverage` in `pyproject.toml` (`--cov=src --cov-report=term-missing --cov-report=xml --cov-fail-under=90` on core deterministic logic):
+1. **`tests/test_vocab.py`:** Verifies exact 512-token Tensor-Core alignment (`len(vocab) % 64 == 0`), bijective token-to-ID mappings, and AMT 55,028 offset constants.
+2. **`tests/test_tokenizer_roundtrip.py`:** Generates synthetic 4-track MIDI files (Drums, Bass, Chords, Triplet Lead), runs `encode -> decode`, and asserts exact pitch equality, $\le 1$ grid tick timing drift, and bar-interleaved ordering.
+3. **`tests/test_grammar_fsm.py`:** Runs 256 steps of random logits through `MusicGrammarLogitsProcessor` (in both REMI+ and AMT triplet modes) and asserts 100% syntactically valid sequences.
+4. **`tests/test_cleaner_and_mir.py`:** Tests the anti-metronome filter, `has_excessive_notes_at_any_time` burst detector, 896-ID `evaluation_set_lakh_ids.txt` holdout filter, and Krumhansl-Schmuckler key detection accuracy on synthetic major/minor scales.
+5. **`tests/test_infilling_mask.py`:** Verifies stem-infilling sequence construction, `MidiCaps` prompt synthesis, and loss masking (`labels = -100` on prompt and conditioning context).
+6. **`tests/test_music_critics.py`:** Verifies DPO reward critics rank consonant in-key grooves strictly higher than minor-2nd clashing or flat-velocity sequences ($R(x, y_{\text{chosen}}) > R(x, y_{\text{rejected}})$).
+7. **`tests/test_midi_export.py`:** Verifies exported `.mid` files are valid SMF Type 1, assign `[TRACK_DRUMS]` to Channel 9 (DAW Ch 10), clip overlapping same-pitch notes cleanly, and leave zero hanging notes.
+
+```powershell
+# Run full test suite with line & branch coverage report
+uv run pytest --cov=src --cov-branch --cov-report=term-missing
+```
