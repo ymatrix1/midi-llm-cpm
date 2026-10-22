@@ -1,7 +1,7 @@
 # PRODUCT REQUIREMENTS DOCUMENT (PRD) & MASTER SYSTEM SPECIFICATION
 ## Project: SOTA Symbolic Multitrack Text-to-MIDI & Stem-Infilling Engine (`midi-llm-cpm`)
 
-**Version:** 2.1 (Production Specification — Incorporating `slseanwu/MIDI-LLM` & `MidiCaps` Findings)  
+**Version:** 2.2 (Production Specification — Incorporating `slseanwu/MIDI-LLM`, `MidiCaps`, & `GigaMIDI v2.0.0`)  
 **Target Architecture:** Causal Transformer LLM (`MiniCPM-1B` / `Qwen2.5-1.5B`) + Symbolic Multitrack Grammar  
 **Reference Baseline:** [`slseanwu/MIDI-LLM_Llama-3.2-1B`](https://huggingface.co/slseanwu/MIDI-LLM_Llama-3.2-1B) ([GitHub: `slSeanWU/MIDI-LLM`](https://github.com/slSeanWU/MIDI-LLM), ISMIR 2026)  
 **Hardware Envelope:** Local Tier: 1x NVIDIA RTX 4070 Super (12GB VRAM) | Cloud Scale Tier: 8x NVIDIA H100 (80GB)
@@ -33,24 +33,30 @@ The system accepts freeform natural language producer prompts (e.g., *"118 BPM n
 
 ---
 
-## 2. LESSONS & REUSABLE ASSETS FROM `slseanwu/MIDI-LLM`
+## 2. LESSONS & REUSABLE ASSETS FROM `MIDI-LLM`, `MidiCaps` & `GigaMIDI v2.0.0`
 
-An audit of [`slseanwu/MIDI-LLM_Llama-3.2-1B`](https://huggingface.co/slseanwu/MIDI-LLM_Llama-3.2-1B) and [`github.com/slSeanWU/MIDI-LLM`](https://github.com/slSeanWU/MIDI-LLM) reveals critical architectural trade-offs and directly reusable assets:
+An audit of [`slseanwu/MIDI-LLM_Llama-3.2-1B`](https://huggingface.co/slseanwu/MIDI-LLM_Llama-3.2-1B), [`amaai-lab/MidiCaps`](https://huggingface.co/datasets/amaai-lab/MidiCaps), and [`Metacreation/GigaMIDI`](https://huggingface.co/datasets/Metacreation/GigaMIDI) reveals critical architectural trade-offs and directly reusable assets:
 
-### 2.1 What We Can Grab Directly from `MIDI-LLM` & `MidiCaps`
+### 2.1 What We Can Grab Directly
 1. **Self-Contained SFT Dataset (`amaai-lab/MidiCaps`):**
    * We **do not** need to download raw LakhMIDI separately or re-run slow `music21` MIR extraction on those 168,385 files.
    * `amaai-lab/MidiCaps` provides both `midicaps.tar.gz` (all 168,385 LakhMIDI `.mid` files) AND `train.json` containing **19 pre-computed columns**:
      * `location`, `caption`, `genre`, `genre_prob`, `mood`, `mood_prob`, `key`, `time_signature`, `tempo`, `tempo_word`, `duration`, `duration_word`, `chord_summary`, `chord_summary_occurence`, `instrument_summary`, `instrument_numbers_sorted`, `all_chords`, `all_chords_timestamps`, and `test_set`.
-2. **Official 896-Track Evaluation Split (`assets/evaluation_set_lakh_ids.txt`):**
-   * Grab directly from `slSeanWU/MIDI-LLM/blob/main/assets/evaluation_set_lakh_ids.txt` to ensure zero train/test contamination during CPT (`GigaMIDI`) and SFT (`MidiCaps`), and enable direct apples-to-apples benchmarking against MIDI-LLM's published FAD (`0.173`) and CLAP (`22.1`) scores.
-3. **System Prompt & Sequence Length Convention:**
+2. **Extended GigaMIDI v2 (`Metacreation/GigaMIDI`, `config_name="v2.0.0"`):**
+   * **Critical HF Config Caveat:** On Hugging Face, `Metacreation/GigaMIDI` sets `v1.0.0` as `default: true`. Our data pipeline (`downloader.py`) **MUST explicitly pass `name="v2.0.0"`** (`load_dataset("Metacreation/GigaMIDI", "v2.0.0", streaming=True)`) to load **Extended GigaMIDI v2.0.0** (2,136,218 unique MIDI files, 6.89M tracks, 2.3M expressive loops + 9.2M non-expressive loops).
+   * **Zero-Disk In-Memory Parsing & 28 Pre-Computed Columns:** Each Parquet row in `v2.0.0` contains raw MIDI bytes in `row["music"]` (loaded directly in-memory via `symusic.Score.from_midi(row["music"])`), file hash `row["md5"]`, plus rich pre-computed columns:
+     * **Expressive Performance & Loop Metadata (`NOMML`):** `NOMML` (Note Onset Median Metric Level per track), `MIDI_program_number__expressive_`, `instrument_group__expressive_`, `start_tick__expressive_`, `end_tick__expressive_`, `duration_beats__expressive_`, `note_density__expressive_`, `loopability__expressive_`, plus `loop_track_idx`, `loop_instrument_type`, `loop_start`, `loop_end`.
+     * **Ensemble Category Filter:** `instrument_category__drums-only__0__all-instruments-with-drums__1_no-drums__2` (`0` = drums-only, `1` = all-instruments-with-drums, `2` = no-drums).
+     * **Curated Genre/Style Ground Truth (Weak Captioning for CPT):** `music_styles_curated` (Dr. Cale Plut curated styles), `music_style_scraped`, `music_style_audio_text_Discogs`, `music_style_audio_text_Lastfm`, `music_style_audio_text_Tagtraum`, `tempo`, `TPQN`, `total_notes`, `avg_velocity`, `min_velocity`, `max_velocity`.
+3. **Official 896-Track Evaluation Split (`assets/evaluation_set_lakh_ids.txt`):**
+   * Grabbed directly from `slSeanWU/MIDI-LLM/blob/main/assets/evaluation_set_lakh_ids.txt` to ensure zero train/test contamination during CPT (`GigaMIDI v2.0.0` via `row["md5"]`) and SFT (`MidiCaps`), and enable direct apples-to-apples benchmarking against MIDI-LLM's published FAD (`0.173`) and CLAP (`22.1`) scores.
+4. **System Prompt & Sequence Length Convention:**
    * System Prompt Prefix: `"You are a world-class composer. Please compose some music according to the following description: "` followed by `prompt + " "` and `[MUSIC_BOS]`.
    * Training sequence length `2048` (`max_new_tokens=2046` at inference) with `temperature=1.0, top_p=0.98`.
-4. **Polyphonic Explosion Filter & Audio Preview Pipeline (`midi_llm/utils.py`):**
+5. **Polyphonic Explosion Filter & Audio Preview Pipeline (`midi_llm/utils.py`):**
    * Port `has_excessive_notes_at_any_time(tokens, max_notes_per_time=64)` (using `torch.bincount` on onset times) as a post-generation sanity check.
    * Port `synthesize_midi_to_audio()` (FluidSynth `FluidR3_GM.sf2` $\rightarrow$ `librosa.effects.trim(top_db=30)` $\rightarrow$ `pyloudnorm` LUFS normalization to `-18.0` / `-14.0` LUFS $\rightarrow$ FFmpeg MP3 export).
-5. **Dual-Mode Tokenization Support (Compact REMI+ vs. AMT 55k Compatibility):**
+6. **Dual-Mode Tokenization Support (Compact REMI+ vs. AMT 55k Compatibility):**
    * **Why MIDI-LLM used 55,028 tokens:** MIDI-LLM appends the full [Anticipatory Music Transformer (AMT)](https://github.com/jthickstun/anticipation) arrival-time triplet vocabulary (`55,028` tokens: `[time_offset, duration, (instrument, pitch)]` + `AMT_GPT2_BOS_ID=55026`) directly onto Llama-3.2-1B (`128,256` $\rightarrow$ `183,286` tokens).
    * **The 12GB VRAM Trade-off:** Adding 55,030 tokens adds $\sim 338\text{ MB}$ of parameters to `embed_tokens` + `lm_head` alone (and $> 2.7\text{ GB}$ of optimizer states + gradients in FP32/BF16), AND completely discards MIDI velocity (AMT uses flat per-instrument velocities) and bar/beat metric grids (using raw 10ms arrival-time bins up to 100 seconds).
    * **Our Solution:** Support **two pluggable tokenizer backends** in `src/tokenization/`:
@@ -70,7 +76,7 @@ midi-llm-cpm/
 ├── configs/
 │   ├── tokenizer_config.yaml        # Vocabulary bounds (REMI+ 512 vs AMT 55028), tick resolution
 │   ├── train_local_4070.yaml        # 12GB VRAM config (QLoRA/DoRA + modules_to_save, seq_len=2048)
-│   ├── train_cloud_h100.yaml        # Full CPT + SFT ZeRO-2 config (MusicPile + GigaMIDI + MidiCaps)
+│   ├── train_cloud_h100.yaml        # Full CPT + SFT ZeRO-2 config (MusicPile + GigaMIDI v2 + MidiCaps)
 │   ├── dpo_music_theory.yaml        # DPO alignment hyperparameters
 │   └── deepspeed_zero2.json         # Multi-GPU DeepSpeed configuration
 ├── src/
@@ -80,16 +86,16 @@ midi-llm-cpm/
 │   │   ├── midi_tokenizer.py        # Bidirectional Bar-Interleaved REMI+ & AMT wrapper
 │   │   └── grammar_fsm.py           # Finite State Machine & HuggingFace LogitsProcessor
 │   ├── data/
-│   │   ├── downloader.py            # HF downloader for MidiCaps, GigaMIDI, and MusicPile
+│   │   ├── downloader.py            # HF downloader for MidiCaps, GigaMIDI (v2.0.0), and MusicPile
 │   │   ├── cleaner.py               # Fast C++/symusic heuristic filters, 896-ID eval exclusion & dedup
 │   │   ├── mir_extractor.py         # Vectorized Krumhansl-Schmuckler fallback for uncaptioned GigaMIDI
-│   │   ├── llm_captioner.py         # Converts MidiCaps 19-column JSON into diverse prompt templates
+│   │   ├── llm_captioner.py         # Converts MidiCaps 19-col & GigaMIDI v2 28-col into prompts
 │   │   └── dataset.py               # PyTorch Dataset, AMT/Track-Infilling augmentation & packing
 │   ├── models/
 │   │   ├── model_loader.py          # MiniCPM-1B / Qwen2.5-1.5B / Llama-3.2-1B loader & vocab resize
 │   │   └── music_critics.py         # Rule-based music theory & polyphony scorers for DPO
 │   ├── training/
-│   │   ├── train_cpt.py             # Stage 1 Continued Pretraining (MusicPile text + GigaMIDI)
+│   │   ├── train_cpt.py             # Stage 1 Continued Pretraining (MusicPile text + GigaMIDI v2.0.0)
 │   │   ├── train_sft.py             # Stage 2 SFT & Infilling trainer (MidiCaps + LakhMIDI)
 │   │   └── train_dpo.py             # Stage 3 Music-theoretic DPO trainer (TRL DPOTrainer)
 │   ├── inference/
@@ -158,16 +164,20 @@ Implement a `transformers.LogitsProcessor` (`MusicGrammarLogitsProcessor`) and v
 
 ---
 
-### Component B: Data Engineering & `MidiCaps` / `GigaMIDI` Pipeline (`src/data/`)
+### Component B: Data Engineering & `MidiCaps` / `GigaMIDI v2.0.0` Pipeline (`src/data/`)
 
 #### B.1 Dataset Sources & Strict Evaluation Split (`downloader.py`, `cleaner.py`)
 1. **Evaluation Holdout Filtering:** Always load `assets/evaluation_set_lakh_ids.txt` (the 896 LakhMIDI MD5 hashes from `slSeanWU/MIDI-LLM`) and strictly exclude them from both CPT and SFT splits.
 2. **SFT Dataset (`amaai-lab/MidiCaps`):**
    * Stream/extract `midicaps.tar.gz` and join with `train.json`.
    * Directly leverage the pre-extracted `MidiCaps` columns (`caption`, `key`, `time_signature`, `tempo`, `chord_summary`, `all_chords`, `all_chords_timestamps`, `instrument_numbers_sorted`, `genre`, `mood`) without redundant slow `music21` parsing.
-3. **CPT Datasets (Optional / Cloud Scale):**
-   * `m-a-p/MusicPile` (music theory, ABC notation, and musicology text).
-   * `Metacreation/GigaMIDI` (standalone multitrack MIDIs filtered to exclude all `MidiCaps` / evaluation hashes).
+3. **CPT Datasets (`m-a-p/MusicPile` + `Metacreation/GigaMIDI` `v2.0.0`):**
+   * **`m-a-p/MusicPile` (~1.7B tokens):** Music theory, ABC notation, and musicology text.
+   * **`Metacreation/GigaMIDI` (`name="v2.0.0"`, ~1.4B tokens):**
+     * Load via `load_dataset("Metacreation/GigaMIDI", "v2.0.0", streaming=True)` using authenticated HuggingFace CLI credentials.
+     * Exclude any `row["md5"]` present in `MidiCaps` (`train.json`) or `assets/evaluation_set_lakh_ids.txt`.
+     * Parse raw MIDI bytes directly in-memory via `symusic.Score.from_midi(row["music"])`.
+     * Filter/prioritize multitrack ensembles (`instrument_category__drums-only__0__all-instruments-with-drums__1_no-drums__2 == 1`), high expressive performance (`NOMML` and `loopability__expressive_`), and optionally synthesize weak metadata captions from `music_styles_curated`, `music_style_audio_text_Discogs`, `tempo`, and `loop_instrument_type`.
 
 #### B.2 Fast C++ MIDI Sanitization (`cleaner.py`)
 1. Reject files with $< 32$ notes, duration $< 8\text{s}$ or $> 600\text{s}$, or corrupted headers.
@@ -183,7 +193,7 @@ You are a world-class composer. Please compose some music according to the follo
 During SFT, mix three prompt styles and two causal task objectives (`seq_len = 2048`):
 1. **Prompt Style Mixing:**
    * **50% Rich `MidiCaps` Caption:** Original `caption` field from `train.json`.
-   * **30% Structured Producer Prompt:** Synthesized from `MidiCaps` features (e.g., `"{tempo} BPM {mood} {genre} track in {key} ({time_signature}) featuring {instrument_summary}. Chord progression: {chord_summary}."`).
+   * **30% Structured Producer Prompt:** Synthesized from `MidiCaps` / `GigaMIDI v2.0.0` features (e.g., `"{tempo} BPM {mood} {genre} track in {key} ({time_signature}) featuring {instrument_summary}. Chord progression: {chord_summary}."`).
    * **20% Short Creative Prompt:** High-level vibe/genre description.
 2. **Causal Task Mixing (70% Text-to-MIDI / 30% Infilling):**
    * **70% Standard Text-to-Multitrack:** Prompt $\rightarrow$ `[MUSIC_BOS]` $\rightarrow$ Interleaved Multitrack Tokens $\rightarrow$ `[MUSIC_EOS]`.
