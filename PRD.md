@@ -17,11 +17,11 @@ Design, implement, and benchmark an open-source, reproducible **Symbolic Multitr
 The system accepts natural language musical descriptions (e.g., *"118 BPM neo-soul groove in F minor with lush Rhodes 9th voicings, syncopated slap bass, and swung boom-bap drums"*)—optionally paired with an **Explicit Musical Plan** (form, harmonic rhythm, instrumentation) or existing MIDI stems—and autoregressively outputs expressive, multitrack **Standard MIDI Files (SMF Type 1, `.mid`)** verified for import into Ableton Live, Logic Pro, FL Studio, and Reaper.
 
 ### 1.1 Architectural Hypotheses & Differentiators to Validate via Ablation
-Rather than assuming SOTA in advance, this stack is structured around five falsifiable architectural hypotheses evaluated via locked ablations (Section 6):
+Rather than assuming SOTA in advance, this stack is structured around five falsifiable architectural hypotheses evaluated via locked ablations (Component E.4):
 
-| Hypothesis | `MIDI-LLM_Llama-3.2-1B` Baseline | `midi-llm-cpm` v4.0 Design | Ablation Metric |
+| Hypothesis | `MIDI-LLM_Llama-3.2-1B` Baseline | `midi-llm-cpm` v4.1 Design | Ablation Metric |
 | :--- | :--- | :--- | :--- |
-| **H1: Compact Expressive Representation vs. 55k Arrival-Time Triplets** | Stanford AMT (`+55,030` tokens; flat velocity, no `CC64`, 10ms bins) | **Bar-Interleaved REMI-Plan (`+630` tokens; `pad_to_multiple_of=64` on total vocab)** with **Per-Note Microtiming Residuals (`[MICRO_*]`)**, **32 Velocity Bins**, **`CC64`/`CC1`/`CC11`/`PitchBend`**, and **129 Full GM Programs** | Microtiming error (ms), Velocity Entropy, Multi-SoundFont FAD |
+| **H1: Compact Expressive Representation vs. 55k Arrival-Time Triplets** | Stanford AMT (`+55,030` tokens; flat velocity, no `CC64`, 10ms bins) | **Bar-Interleaved REMI-Plan (`+661` tokens; `pad_to_multiple_of=64` on total vocab)** with **Per-Note Microtiming Residuals (`[MICRO_*]`)**, **32 Velocity Bins**, **`CC64`/`CC1`/`CC11`/`PitchBend`**, and **130 Full GM Instrument Tokens (128 Melodic + Drums + Unknown)** | Microtiming error (ms), Velocity Entropy, Multi-SoundFont FAD |
 | **H2: Explicit Musical Plan vs. Direct Note Emission** | Chords/structure only in freeform text prompt | **Controllable Plan Header & Beat-Level Harmonic Rhythm:** `Form -> Beat-Level Chords (Root/Quality/Bass) -> Instrumentation -> Notes` | Chord Adherence (%), Structural Recurrence, User Plan Editability |
 | **H3: Classifier-Free Guidance (LLM-CFG)** | Standard causal sampling (`temp=1.0, top_p=0.98`) | **10% Unconditional Prompt Dropout + Batched Logit-Level CFG ($\gamma \in [1.5, 2.5]$)** | LAION-CLAP ($\uparrow$), Instrument/Tempo Recall ($\uparrow$) |
 | **H4: Work-Deduplicated 12x Transposition Augmentation** | Raw corpus key distribution (~45% C Maj / A Min bias) | **Work-level deduplication prior to split + 12x Joint Text-Regex & Symbolic Pitch Transposition ($\Delta p \in [-5, +6]$)** | Rare-Key Scale Adherence (`F# min`, `Db maj`), Tonal Distance |
@@ -30,7 +30,7 @@ Rather than assuming SOTA in advance, this stack is structured around five falsi
 ### 1.2 Model Selection Policy
 * **Primary decoder candidate:** [`openbmb/MiniCPM5-1B-Base`](https://huggingface.co/openbmb/MiniCPM5-1B-Base), fine-tuned as a causal MIDI-token decoder. Use a no-think task format for text-facing generation; serialized MIDI output must contain only the specified plan and music grammar, not free-form reasoning traces. The post-trained [`openbmb/MiniCPM5-1B`](https://huggingface.co/openbmb/MiniCPM5-1B) checkpoint supports both thinking and no-think modes and may be profiled as a separate candidate.
 * **Comparison backbones:** [`Qwen/Qwen3.5-0.8B`](https://huggingface.co/Qwen/Qwen3.5-0.8B) in non-thinking mode, and `meta-llama/Llama-3.2-1B` / the published MIDI-LLM checkpoint for direct baseline comparison. Include `Qwen2.5-1.5B` only as an optional capacity/VRAM ablation, not the default local model.
-* The supplied general-capability charts are used only to prioritize this shortlist. They do not establish music-generation quality. Select the release decoder only after the locked text-to-MIDI bake-off in Section 6, using the same data split, tokenization, training-token budget, decoding settings, and music-specific metrics for each candidate.
+* The supplied general-capability charts are used only to prioritize this shortlist. They do not establish music-generation quality. Select the release decoder only after the locked text-to-MIDI bake-off in Component E, using the same data split, tokenization, training-token budget, decoding settings, and music-specific metrics for each candidate.
 * A thinking model may be evaluated as an optional prompt-to-plan component. It is outside the critical path and must return a schema-validated plan; the MIDI decoder remains non-thinking. Keep this path only if it improves held-out prompt adherence or human preference enough to justify added latency.
 
 ### 1.3 Target Use Cases
@@ -76,14 +76,14 @@ File-level MD5 matching and single-track MinHash are insufficient to prevent tra
 
 ```text
 midi-llm-cpm/
-├── PRD.md                           # This Product Requirements Document & Specification (v4.0)
+├── PRD.md                           # This Product Requirements Document & Specification (v4.1)
 ├── LICENSE                          # Apache-2.0 License for source code
 ├── MODEL_AND_DATA_LICENSES.md       # License compatibility matrix (Apache-2.0, Llama-3.2, CC-BY-SA, CC-BY-NC)
 ├── assets/
 │   ├── evaluation_set_lakh_ids.txt  # 896 held-out LakhMIDI MD5 IDs from slSeanWU/MIDI-LLM
 │   └── example_prompts.txt          # Canonical evaluation prompts from slSeanWU/MIDI-LLM
 ├── configs/
-│   ├── tokenizer_config.yaml        # REMI-Plan vocab, 24-PPQ + microtiming bins, 129 GM programs
+│   ├── tokenizer_config.yaml        # REMI-Plan vocab, 24-PPQ + microtiming bins, 130 GM tokens
 │   ├── train_tier1_12gb.yaml        # Tier 1 (12 GB VRAM) config (QLoRA/DoRA, Chunked CE, 2k->4k)
 │   ├── train_tier2_24gb.yaml        # Tier 2 (16-24 GB VRAM) config (Native 4k LoRA/DoRA + DPO)
 │   ├── train_tier3_cloud.yaml       # Tier 3 (Multi-GPU ZeRO-2/3) config (Full CPT + SFT)
@@ -92,7 +92,7 @@ midi-llm-cpm/
 ├── src/
 │   ├── __init__.py
 │   ├── tokenization/
-│   │   ├── vocab.py                 # REMI-Plan vocabulary (32 BPM bins, 129 GM, beat chords, microtiming)
+│   │   ├── vocab.py                 # REMI-Plan vocabulary (32 BPM bins, 130 GM, beat chords, microtiming)
 │   │   ├── midi_tokenizer.py        # Bidirectional Bar-Interleaved REMI-Plan & AMT 55k wrapper
 │   │   └── grammar_fsm.py           # Finite State Machine LogitsProcessor & LLM-CFG processor
 │   ├── data/
@@ -126,7 +126,7 @@ midi-llm-cpm/
 ├── tests/
 │   ├── conftest.py                  # Shared pytest fixtures
 │   ├── daw_fixtures/                # Golden SMF Type 1 regression files for Ableton/Logic/FL/Reaper
-│   ├── test_vocab.py                # Verifies exact token counts (32 BPM, 129 GM, beat chords, microtiming)
+│   ├── test_vocab.py                # Verifies exact token counts (32 BPM, 130 GM, beat chords, microtiming)
 │   ├── test_tokenizer_roundtrip.py  # Sub-millisecond roundtrip with microtiming residuals, CCs & pitch bend
 │   ├── test_grammar_fsm.py          # Verifies FSM LogitsProcessor & LLM-CFG across Plan + Note states
 │   ├── test_dedup_leakage.py        # Verifies transposition-invariant leakage blocker catches shifted clones
@@ -147,13 +147,7 @@ midi-llm-cpm/
 
 #### A.1 Addressing Representation Bottlenecks (Grid + Microtiming + Continuous Controls)
 A coarse 24-PPQ grid alone quantizes away human groove, while raw 10ms arrival-time triplets (AMT) lose bar/beat structure and chord alignment. Inspired by **Agogic** ([Wang et al.](https://yisuanwang.github.io/Agogic/)) and **Moonbeam** ([arXiv:2505.15559](https://arxiv.org/abs/2505.15559)), we combine a **96-position metric bar grid (`24` PPQ = 20 ticks per step at 480 TPQ)** with **Per-Note Microtiming Residuals (`[MICRO_-4]`..`[MICRO_+4]`)** and **Expressive Continuous Control Tokens**:
-* **Exact Timing Reconstruction:** Each note's tick onset at `480` TPQ is reconstructed as:
-
-  $$
-  t_{\text{onset}} = t_{\text{bar}} + 20 \cdot \text{POS}_p + 2 \cdot \text{MICRO}_m
-  $$
-
-  where $t_{\text{bar}}$ is the bar start tick and $m \in [-4, +4]$ spans $[-8, +8]$ ticks ($\approx \pm 8.3\text{ ms}$ at 120 BPM, reducing quantization error to **$\le 1\text{ tick} \approx 1\text{ ms}$**).
+* **Exact Timing Reconstruction:** Each note's tick onset at `480` TPQ is reconstructed as $t_{\text{onset}} = t_{\text{bar}} + 20 \cdot \text{POS}_p + 2 \cdot \text{MICRO}_m$, where $t_{\text{bar}}$ is the bar start tick and $m \in [-4, +4]$ spans $[-8, +8]$ ticks ($\approx \pm 8.3\text{ ms}$ at 120 BPM, reducing quantization error to **$\le 1\text{ tick} \approx 1\text{ ms}$**).
 * **Unbounded Bar Indexing:** Instead of a fixed `[BAR_0]..[BAR_63]` vocabulary (which overflows on songs $> 64$ bars), every bar begins with a universal **`[BAR]` boundary token** followed by a **Phrase-Relative Bar Index (`[BAR_REL_0]`..`[BAR_REL_15]`)** and optional **Section Countdown (`[BARS_LEFT_1]`..`[BARS_LEFT_16]`)**. This supports arbitrarily long arrangements without vocabulary overflow.
 * **Beat-Level Harmonic Rhythm & Inversions:** Chords are not restricted to one per bar. `[CHORD_ROOT_*] [CHORD_QUAL_*] [CHORD_BASS_*]` can be emitted at **any `[POS_p]`** within a bar (e.g., `POS_0`, `POS_24`, `POS_48`, `POS_72`), capturing multi-chord bars, syncopated harmonic anticipations, and slash-chord bass inversions.
 
@@ -289,7 +283,7 @@ Every release checkpoint must populate the following ablation matrix on the 896-
 ### 5.1 Open-Source Deliverables & Community Standards
 1. **Code & Weight Licensing (`LICENSE`, `MODEL_AND_DATA_LICENSES.md`):**
    * Source code licensed under **Apache-2.0**.
-   * Clear documentation of downstream weight licenses (`Qwen2.5` / `MiniCPM` Apache-2.0 vs. `Llama-3.2` Community License) and dataset tracks (`MidiCaps`-only CC-BY-SA-4.0 track vs. `+GigaMIDI v2.0.0` CC-BY-NC-4.0 research track).
+   * Clear documentation of downstream weight licenses (`MiniCPM5` / `Qwen3.5` / `Qwen2.5` Apache-2.0 vs. `Llama-3.2` Community License) and dataset tracks (`MidiCaps`-only CC-BY-SA-4.0 track vs. `+GigaMIDI v2.0.0` CC-BY-NC-4.0 research track).
 2. **Model Cards, Dataset Cards & Copyright/Safety Statement:**
    * Publish standardized Hugging Face Model Cards, frozen split manifests, and an ethical copyright/attribution statement (including training-data memorization checks ensuring generated outputs do not regurgitate $> 4$-bar verbatim n-grams from training songs).
 3. **Small Downloadable Demo Checkpoint & CPU-Only Install:**
