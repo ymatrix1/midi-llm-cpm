@@ -1,7 +1,7 @@
 # PRODUCT REQUIREMENTS DOCUMENT (PRD) & SYSTEM SPECIFICATION
 ## Project: Open, Reproducible Symbolic Multitrack Text-to-MIDI Research & Production Stack (`midi-llm-cpm`)
 
-**Version:** 4.0 (Peer-Reviewed Open-Source Specification)  
+**Version:** 4.1 (Model Shortlist & Non-Reasoning Decoder Specification)
 **Positioning:** An open, reproducible text-to-symbolic-MIDI research and production stack targeting state-of-the-art performance on a locked public benchmark.  
 **Reference Baselines:**
 * [`slseanwu/MIDI-LLM_Llama-3.2-1B`](https://huggingface.co/slseanwu/MIDI-LLM_Llama-3.2-1B) ([GitHub: `slSeanWU/MIDI-LLM`](https://github.com/slSeanWU/MIDI-LLM), ISMIR 2026 — `FAD = 0.173`, `CLAP = 22.1` on 896 MidiCaps eval IDs)
@@ -27,13 +27,19 @@ Rather than assuming SOTA in advance, this stack is structured around five falsi
 | **H4: Work-Deduplicated 12x Transposition Augmentation** | Raw corpus key distribution (~45% C Maj / A Min bias) | **Work-level deduplication prior to split + 12x Joint Text-Regex & Symbolic Pitch Transposition ($\Delta p \in [-5, +6]$)** | Rare-Key Scale Adherence (`F# min`, `Db maj`), Tonal Distance |
 | **H5: Progressive `2,048 -> 4,096` Context Curriculum** | Fixed `2,048` context (~13–14 bars) | **Phase A (`2,048`) $\rightarrow$ Phase B (`4,096`) with Chunked Cross-Entropy + Unbounded `[BAR]` Relative Indexing** | 32-bar Structural Completeness, 16-bar Stem Infilling F1 |
 
-### 1.2 Target Use Cases
+### 1.2 Model Selection Policy
+* **Primary decoder candidate:** [`openbmb/MiniCPM5-1B-Base`](https://huggingface.co/openbmb/MiniCPM5-1B-Base), fine-tuned as a causal MIDI-token decoder. Use a no-think task format for text-facing generation; serialized MIDI output must contain only the specified plan and music grammar, not free-form reasoning traces. The post-trained [`openbmb/MiniCPM5-1B`](https://huggingface.co/openbmb/MiniCPM5-1B) checkpoint supports both thinking and no-think modes and may be profiled as a separate candidate.
+* **Comparison backbones:** [`Qwen/Qwen3.5-0.8B`](https://huggingface.co/Qwen/Qwen3.5-0.8B) in non-thinking mode, and `meta-llama/Llama-3.2-1B` / the published MIDI-LLM checkpoint for direct baseline comparison. Include `Qwen2.5-1.5B` only as an optional capacity/VRAM ablation, not the default local model.
+* The supplied general-capability charts are used only to prioritize this shortlist. They do not establish music-generation quality. Select the release decoder only after the locked text-to-MIDI bake-off in Section 6, using the same data split, tokenization, training-token budget, decoding settings, and music-specific metrics for each candidate.
+* A thinking model may be evaluated as an optional prompt-to-plan component. It is outside the critical path and must return a schema-validated plan; the MIDI decoder remains non-thinking. Keep this path only if it improves held-out prompt adherence or human preference enough to justify added latency.
+
+### 1.3 Target Use Cases
 1. **Unconditional Text-to-Multitrack Generation:** Generate 4 to 64+ bars of multi-instrument arrangement from text prompts.
 2. **Plan-Conditioned Generation (Editable Blueprint):** Generate or edit an explicit symbolic plan (`Section -> Beat-Level Chord Progression -> Active GM Instruments`) before rendering notes.
 3. **Conditional Stem Infilling (Accompaniment Generation):** Given existing tracks (e.g., 16 bars of Drums + Chords) and a prompt, infill a missing target stem (`[TRACK_BASS]`, `[TRACK_MELODY]`) locked to the context groove and harmonic rhythm.
 4. **Bar Continuation & Outpainting:** Extend a 4-to-8 bar seed loop into a multi-section arrangement using unbounded `[BAR]` relative indexing.
 
-### 1.3 Hardware Tiers & OS Support Matrix
+### 1.4 Hardware Tiers & OS Support Matrix
 To ensure reproducibility across academic labs and independent contributors, hardware targets are separated into explicit tiers and verified via a mandatory **Phase 0 Memory & Throughput Benchmark (`scripts/bench_hardware.py`)**:
 
 | Tier | Hardware Envelope | Supported Workflows | OS Support |
@@ -206,10 +212,11 @@ Applied **only after** work-level train/val/test splitting (Section 2.2):
 
 #### C.1 Phase 0 Hardware & Memory Verification Gate (`scripts/bench_hardware.py`)
 Before running multi-hour training, `uv run midi-llm bench-hw` profiles peak CUDA memory and tokens/sec across:
-* Base Models: `MiniCPM-1B`, `Qwen2.5-1.5B`, `Llama-3.2-1B`
+* Base Models: `openbmb/MiniCPM5-1B-Base` (primary candidate), `Qwen/Qwen3.5-0.8B` (non-thinking comparison), and `meta-llama/Llama-3.2-1B` (MIDI-LLM comparison). Optionally profile `Qwen2.5-1.5B` as a capacity/VRAM ablation.
 * Sequence Lengths: `2,048` (`bs=2, grad_accum=16`) vs. `4,096` (`bs=1, grad_accum=32`)
 * Loss Implementations: Standard `F.cross_entropy` vs. **512-Token Chunked Cross-Entropy** vs. `liger-kernel` (Linux/WSL2)
 * **Acceptance Rule:** Tier 1 (`12 GB VRAM`) configs automatically enable `4,096` in Phase 2B only when `bench_hardware.py` confirms peak reserved VRAM $\le 11.2\text{ GB}$ on the active device; otherwise `4,096` is deferred to Tier 2 (`16–24 GB VRAM`).
+* **Mode Rule:** Use a no-think task format for MIDI generation and supervised fine-tuning. Do not train or decode free-form reasoning traces as part of the music-token target. The base checkpoint is preferred for adaptation; the post-trained MiniCPM5-1B no-think mode may be included in the bake-off.
 
 #### C.2 Progressive Context Curriculum (`train_sft.py`)
 1. **Stage 1 (Embedding & Head Alignment Warmup — 10% steps, `seq_len=2,048`):** Freeze transformer blocks; train only newly added rows of `embed_tokens` and `lm_head` (`lr=5e-4`).
