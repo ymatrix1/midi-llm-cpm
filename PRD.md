@@ -1,7 +1,7 @@
 # PRODUCT REQUIREMENTS DOCUMENT (PRD) & MASTER SYSTEM SPECIFICATION
 ## Project: SOTA Symbolic Multitrack Text-to-MIDI & Stem-Infilling Engine (`midi-llm-cpm`)
 
-**Version:** 3.0 (SOTA Open-Source Specification — Designed to Surpass `slseanwu/MIDI-LLM`)  
+**Version:** 3.1 (SOTA Open-Source Specification — Progressive `2k -> 4k` Context, REMI-CoT, LLM-CFG & GRPO/DPO)  
 **Target Architecture:** Causal Transformer LLM (`MiniCPM-1B` / `Qwen2.5-1.5B`) + Bar-Interleaved REMI-CoT Symbolic Grammar + LLM-CFG + GRPO/DPO  
 **Reference Baseline to Beat:** [`slseanwu/MIDI-LLM_Llama-3.2-1B`](https://huggingface.co/slseanwu/MIDI-LLM_Llama-3.2-1B) ([GitHub: `slSeanWU/MIDI-LLM`](https://github.com/slSeanWU/MIDI-LLM), ISMIR 2026 — Baseline: `FAD = 0.173`, `CLAP = 22.1`)  
 **Hardware Envelope:** Local Tier: 1x NVIDIA RTX 4070 Super (12GB VRAM) | Cloud Scale Tier: 8x NVIDIA H100 (80GB)
@@ -14,7 +14,7 @@ Design, architect, and implement a state-of-the-art, commercial-grade **Symbolic
 The system ingests freeform natural language producer prompts (e.g., *"118 BPM neo-soul groove in F minor with lush Rhodes 9th voicings, syncopated slap bass, and swung boom-bap drums"*)—optionally conditioned on existing MIDI bars, chord progressions, or instrument stems—and autoregressively generates human-expressive, harmonically locked, multitrack **Standard MIDI Files (SMF Type 1, `.mid`)** ready for drag-and-drop import into Ableton Live, Logic Pro, FL Studio, or Reaper.
 
 ### 1.1 Core SOTA Differentiators Over `MIDI-LLM_Llama-3.2-1B`
-| Dimension | `MIDI-LLM_Llama-3.2-1B` (Baseline) | `midi-llm-cpm` v3.0 (Our Architecture) | Why Ours Wins |
+| Dimension | `MIDI-LLM_Llama-3.2-1B` (Baseline) | `midi-llm-cpm` v3.1 (Our Architecture) | Why Ours Wins |
 | :--- | :--- | :--- | :--- |
 | **Tokenization & Vocab Overhead** | Stanford AMT (`+55,030` tokens; ~340 MB embedding weight overhead) | **Bar-Interleaved REMI-CoT (`+576` tokens, $9 \times 64$ Tensor-Core aligned)** + optional AMT wrapper | **99% smaller vocab expansion**; fits 12GB VRAM easily while retaining full AMT compatibility mode |
 | **Velocity & Pedal Expressiveness** | **None** (flat per-instrument velocity, no `CC64` sustain pedal) | **32 Dynamic Velocity Bins + `[PEDAL_ON]`/`[PEDAL_OFF]` (`CC64`) + `NOMML` `[EXPR_HUMAN]` tags** | Drastically more natural FluidSynth piano/guitar/drum renders ($\rightarrow$ **lower FAD**) |
@@ -22,12 +22,12 @@ The system ingests freeform natural language producer prompts (e.g., *"118 BPM n
 | **Prompt Adherence Mechanism** | Standard causal sampling (`temp=1.0, top_p=0.98`); suffers prompt dilution | **10% Prompt Dropout + Batched Logit-Level Classifier-Free Guidance (LLM-CFG, $\gamma \in [1.5, 2.5]$)** | Prevents prompt forgetting over long sequences ($\rightarrow$ **+2 to +4 higher CLAP score**) |
 | **Key & Harmony Generalization** | Trained on raw key distribution (~45% C Maj / A Min bias) | **12x Joint Text + Symbolic Pitch-Transposition Augmentation ($\Delta p \in [-5, +6]$ semitones)** | Uniform harmonic accuracy across all 24 keys, including rare keys (`F# min`, `Db maj`) |
 | **Post-Training Alignment** | SFT only (relies on post-hoc rejection of burst failures) | **Deterministic Grammar FSM + Multi-Critic DPO / GRPO (Harmony + Groove + Prompt-Instrument + CLAP)** | **0.0% syntax failures** + explicit optimization for voice-leading, groove lock, and prompt faithfulness |
-| **Long-Horizon Generation** | Hard-capped at `2046` tokens | **Sliding-Window Bar Outpainting (`[Prompt] + [Theme Anchor Bar 0..1] + [Last 6 Bars]`)** | Generates coherent 64+ bar multi-section songs within a 2,048-token 12GB VRAM window |
+| **Context Length & Song Horizon** | Hard-capped at `2,048` tokens (~13–14 bars; cuts off before Chorus) | **Progressive `2,048` (80%) $\rightarrow$ `4,096` (20%) Context Curriculum + Sliding-Window Outpainting** | Natively models **28–32 bar full songs** (`Intro -> Verse -> Chorus -> Outro`) & **16-bar stem infilling** in one attention span; scales to 64+ bars via sliding window |
 
 ### 1.2 Target Use Cases
-1. **Unconditional Text-to-Multitrack Generation:** Generate 4 to 64+ bars of multi-instrument arrangement from text prompts and structured metadata tags.
-2. **Conditional Stem Infilling (Anticipatory / Accompaniment Generation):** Given an existing set of tracks (e.g., Drums + Chords) and a prompt, generate a missing target stem (e.g., `[TRACK_BASS]` or `[TRACK_MELODY]`) locked to the existing groove and bar-level chords.
-3. **Bar Continuation & Multi-Section Outpainting:** Given an initial 4-bar seed loop, generate a 16-to-64 bar arrangement transitioning across `[SEC_INTRO]`, `[SEC_VERSE]`, `[SEC_CHORUS]`, `[SEC_BRIDGE]`, and `[SEC_OUTRO]`.
+1. **Unconditional Text-to-Multitrack Generation:** Generate 4 to 64+ bars of multi-instrument arrangement from text prompts and structured metadata tags (`28–32` bars natively within a single `4,096`-token context window).
+2. **Conditional Stem Infilling (Anticipatory / Accompaniment Generation):** Given an existing set of tracks (e.g., 16 bars of Drums + Chords) and a prompt, generate a missing 16-bar target stem (e.g., `[TRACK_BASS]` or `[TRACK_MELODY]`) locked to the existing groove and bar-level chords inside the `4,096`-token context window.
+3. **Bar Continuation & Multi-Section Outpainting:** Given an initial 4-bar seed loop, generate a 32-to-64 bar arrangement transitioning across `[SEC_INTRO]`, `[SEC_VERSE]`, `[SEC_CHORUS]`, `[SEC_BRIDGE]`, and `[SEC_OUTRO]`.
 
 ### 1.3 Success Metrics & Acceptance Criteria (SLOs)
 | Metric Category | Metric | Target Threshold |
@@ -37,7 +37,7 @@ The system ingests freeform natural language producer prompts (e.g., *"118 BPM n
 | **Harmonic Coherence** | Scale Consistency / In-Key & Bar-Chord Pitch Ratio | **$\ge$ 94%** alignment with conditioned `[KEY_*]` & `[CHORD_*]` |
 | **Groove & Humanization** | Velocity Entropy ($H_{\text{vel}}$) | **$H_{\text{vel}} \ge 2.2$ bits** (eliminates flat mechanical velocities) |
 | **SOTA Benchmark Target** | 896-ID `MIDI-LLM` Test Split (`FAD` $\downarrow$ / `CLAP` $\uparrow$) | **FAD $\le 0.145$** (vs. `0.173`) / **CLAP $\ge 24.5$** (vs. `22.1`) |
-| **Hardware Envelope** | Peak Training VRAM (Local Config, `seq_len=2048`) | **$\le$ 11.2 GB** on RTX 4070 Super (12GB) |
+| **Hardware Envelope (`2k` / `4k`)** | Peak Training VRAM (`2,048` `bs=2` / `4,096` `bs=1` + Chunked CE) | **$\le$ 10.8 GB** on RTX 4070 Super (12GB) |
 | **Inference Latency** | 8-Bar Multitrack Generation (4 tracks, ~1,200 tokens) | **$< 4.5$ seconds** on single RTX 4070 Super (`bfloat16` + KV Cache / vLLM) |
 | **Code Quality & Formatting** | `uv run ruff check .` & `uv run ruff format --check .` | **0 warnings / 0 errors** (100% clean) |
 | **Automated Test Coverage** | `uv run pytest --cov=src --cov-branch --cov-report=term-missing` | **$\ge 90\%$ line & branch coverage** across core modules |
@@ -67,15 +67,15 @@ An audit of [`slseanwu/MIDI-LLM_Llama-3.2-1B`](https://huggingface.co/slseanwu/M
 
 ```text
 midi-llm-cpm/
-├── PRD.md                           # This Product Requirements Document & Specification (v3.0)
+├── PRD.md                           # This Product Requirements Document & Specification (v3.1)
 ├── assets/
 │   ├── evaluation_set_lakh_ids.txt  # 896 held-out LakhMIDI MD5 IDs from slSeanWU/MIDI-LLM
 │   └── example_prompts.txt          # Canonical evaluation prompts from slSeanWU/MIDI-LLM
 ├── configs/
 │   ├── tokenizer_config.yaml        # Vocab bounds (REMI-CoT 576 vs AMT 55028), 96-pos grid, 64 GM programs
-│   ├── train_local_4070.yaml        # 12GB VRAM config (QLoRA/DoRA + row-masked embed init, seq_len=2048)
+│   ├── train_local_4070.yaml        # 12GB VRAM config (Progressive 2048->4096, Chunked CE, QLoRA/DoRA)
 │   ├── train_cloud_h100.yaml        # Full CPT + SFT ZeRO-2 config (MusicPile + GigaMIDI v2 + MidiCaps)
-│   ├── align_dpo_grpo.yaml          # Multi-Critic DPO & GRPO alignment hyperparameters
+│   ├── align_dpo_grpo.yaml          # Multi-Critic DPO & GRPO alignment hyperparameters (seq_len=4096)
 │   └── deepspeed_zero2.json         # Multi-GPU DeepSpeed configuration
 ├── src/
 │   ├── __init__.py
@@ -89,13 +89,13 @@ midi-llm-cpm/
 │   │   ├── mir_extractor.py         # Vectorized Krumhansl-Schmuckler key, bar-chord & section detector
 │   │   ├── transposition.py         # 12x Joint Text-Regex + Symbolic MIDI Pitch-Transposition Augmenter
 │   │   ├── llm_captioner.py         # Converts MidiCaps 19-col & GigaMIDI v2 28-col into diverse prompts
-│   │   └── dataset.py               # PyTorch Dataset, 10% CFG prompt dropout, stem-infilling & packing
+│   │   └── dataset.py               # PyTorch Dataset, 2048->4096 curriculum sampler, 10% CFG dropout & infilling
 │   ├── models/
-│   │   ├── model_loader.py          # MiniCPM-1B / Qwen2.5-1.5B / Llama-3.2-1B loader & variance-matched init
+│   │   ├── model_loader.py          # MiniCPM-1B / Qwen2.5-1.5B / Llama-3.2-1B loader, vocab init & Chunked CE
 │   │   └── music_critics.py         # Multi-critic reward suite (Harmony, Scale, Groove, Prompt-Inst, CLAP)
 │   ├── training/
 │   │   ├── train_cpt.py             # Stage 1 Continued Pretraining (MusicPile text + GigaMIDI v2.0.0)
-│   │   ├── train_sft.py             # Stage 2 Two-Phase SFT & Infilling trainer (Embed Warmup -> Joint LoRA)
+│   │   ├── train_sft.py             # Stage 2 Progressive SFT (Embed Warmup -> 2048 SFT -> 4096 Long-Horizon SFT)
 │   │   └── train_dpo.py             # Stage 3 Offline DPO & Online GRPO trainer (TRL DPOTrainer / GRPOTrainer)
 │   ├── inference/
 │   │   ├── generator.py             # HF & vLLM generator with LLM-CFG, FSM grammar & sliding-window outpaint
@@ -115,7 +115,7 @@ midi-llm-cpm/
 │   ├── test_grammar_fsm.py          # Verifies FSM LogitsProcessor & LLM-CFG logit combination
 │   ├── test_transposition.py        # Verifies joint text-prompt regex + symbolic pitch/chord transposition
 │   ├── test_cleaner_and_mir.py      # Tests anti-metronome filter, 896-ID holdout, Krumhansl key detector
-│   ├── test_infilling_mask.py       # Verifies bar-interleaved infilling, 10% CFG dropout & label=-100 mask
+│   ├── test_infilling_mask.py       # Verifies bar-interleaved infilling, 2k/4k packing, 10% CFG dropout & -100 mask
 │   ├── test_music_critics.py        # Tests Harmony, Scale, Groove, and Prompt-Instrument faithfulness critics
 │   └── test_midi_export.py          # Verifies SMF Type 1 validity, CC64 sustain, Ch 10 drums, zero hang
 ├── .python-version                  # Pinned Python 3.11 for uv
@@ -211,7 +211,7 @@ Use the `MIDI-LLM` canonical system prompt prefix:
 ```text
 You are a world-class composer. Please compose some music according to the following description: 
 ```
-During SFT (`seq_len = 2048`):
+During SFT (`seq_len = 2048` in Phase A $\rightarrow$ `seq_len = 4096` in Phase B):
 1. **10% Unconditional Prompt Dropout (for LLM-CFG):** In 10% of samples, replace the user description with an empty conditioning span so the model learns unconditional priors for inference-time Classifier-Free Guidance.
 2. **Prompt Style Mixing (on remaining 90%):**
    * **50% Rich `MidiCaps` Caption:** Original `caption` field (with synchronized transposition if $\Delta p \neq 0$).
@@ -223,27 +223,32 @@ During SFT (`seq_len = 2048`):
 
 ---
 
-### Component C: Model Adaptation & 12GB RTX 4070 Super Training (`src/models/`, `src/training/`)
+### Component C: Model Adaptation, Chunked CE & Progressive `2,048 -> 4,096` Training on 12GB VRAM (`src/models/`, `src/training/`)
 
-#### C.1 Foundation Models & Variance-Preserving Embedding Init (`model_loader.py`)
+#### C.1 Foundation Models, Variance-Preserving Init & Chunked Cross-Entropy (`model_loader.py`)
 1. Support `openbmb/MiniCPM-1B-sft-bf16`, `Qwen/Qwen2.5-1.5B`, and `meta-llama/Llama-3.2-1B` in `torch.bfloat16`.
 2. Add the 576 musical tokens and call `model.resize_token_embeddings(len(tokenizer), pad_to_multiple_of=64)`.
 3. Initialize new embedding and `lm_head` rows from $\mathcal{N}(\mu_{\text{old}}, \Sigma_{\text{diag}} \cdot 0.5)$ to prevent initial logit spikes.
+4. **Chunked / Fused Linear Cross-Entropy (Eliminating the `4,096` `lm_head` VRAM Spike):**
+   * At `seq_len = 4,096`, materializing a dense FP32 `[batch, 4096, vocab_size]` logits tensor + backward gradients consumes **~5.0 GB VRAM per sample** on Qwen2.5-1.5B (`vocab ≈ 152k`), which causes OOM on 12GB GPUs.
+   * Implement **Chunked Cross-Entropy** (computing `lm_head(hidden_states[:, i:i+512])` + `F.cross_entropy` in 512-token slices, or using `liger-kernel`'s `FusedLinearCrossEntropyLoss`) so the full `[4096, vocab_size]` logits tensor is never materialized in VRAM. This cuts peak `lm_head` memory from **~5.0 GB to ~0.3 GB**, enabling `seq_len = 4,096` in **~8.8 GB VRAM** on an RTX 4070 Super.
 
-#### C.2 Two-Stage Local Training Recipe for 12GB VRAM (`train_sft.py`)
-* **Stage 1 (Embedding & Head Alignment Warmup — 15% of steps):** Freeze transformer layers; train only the newly added 576 rows of `embed_tokens` and `lm_head` (via a backward gradient hook zeroing rows $< V_{\text{orig}}$) with `lr=5e-4`.
-* **Stage 2 (Joint LoRA/DoRA + Embeddings SFT — 85% of steps):**
-  * LoRA (`r=32, lora_alpha=64`, targets: `q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj`) + row-masked trainable new embeddings.
-  * Optimizer: `paged_adamw_8bit` (`bitsandbytes`).
-  * Attention: FlashAttention-2 / PyTorch SDPA (`attn_implementation="sdpa"` or `"flash_attention_2"`).
-  * Memory: `gradient_checkpointing=True` (`use_reentrant=False`), `per_device_train_batch_size=2`, `gradient_accumulation_steps=16`, `max_seq_length=2048`.
-* **Loss Masking:** Compute Cross-Entropy loss strictly on musical tokens (`labels = -100` over the system prompt and text description).
+#### C.2 Progressive Context Curriculum for 12GB VRAM (`train_sft.py`)
+At ~140 tokens per 4-track bar, `2,048` tokens fits only ~13–14 bars (cutting off before a Chorus/B-section and limiting stem infilling to 7–8 bars), whereas `4,096` tokens fits **28–32 bars** (a full `Intro -> Verse -> Chorus -> Bridge -> Outro` arrangement or a full **16-bar multitrack context + 16-bar infilled stem**). To achieve `4,096`-token mastery without sacrificing throughput:
+* **Phase 1 (Embedding & Head Alignment Warmup — 10% of steps, `seq_len = 2,048`):**
+  * Freeze transformer layers; train only the newly added 576 rows of `embed_tokens` and `lm_head` (via a backward gradient hook zeroing rows $< V_{\text{orig}}$) with `lr = 5e-4`, `per_device_train_batch_size = 2`, `gradient_accumulation_steps = 16`.
+* **Phase 2A (High-Throughput Core SFT — 70% of steps, `seq_len = 2,048`):**
+  * LoRA/DoRA (`r = 32, lora_alpha = 64`, targets: `q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj`) + row-masked trainable new embeddings.
+  * Optimizer: `paged_adamw_8bit` (`bitsandbytes`), `lr = 2e-4`, `per_device_train_batch_size = 2`, `gradient_accumulation_steps = 16` (effective batch = 32 sequences = 65,536 tokens/step).
+* **Phase 2B (Long-Horizon Song Structure & 16-Bar Stem Infilling SFT — Final 20% of steps, `seq_len = 4,096`):**
+  * Switch sequence packer to `max_seq_length = 4,096` (`per_device_train_batch_size = 1`, `gradient_accumulation_steps = 32`, `lr = 5e-5` cosine decay) with Chunked Cross-Entropy enabled, focusing on multi-section (`[SEC_VERSE] -> [SEC_CHORUS]`) arrangements and 16-bar stem infilling.
+* **Loss Masking:** Compute Cross-Entropy loss strictly on musical tokens (`labels = -100` over the system prompt, text description, and unmasked infilling context bars).
 
 ---
 
 ### Component D: Multi-Critic Preference Alignment — DPO & Online GRPO (`src/models/music_critics.py`, `src/training/train_dpo.py`)
 
-With syntax 100% enforced by `MusicGrammarLogitsProcessor`, Stage 3 aligns the model using **Offline DPO** and **Online Group Relative Policy Optimization (GRPO, $G=4$ candidates per prompt)** driven by a 5-part composite reward:
+With syntax 100% enforced by `MusicGrammarLogitsProcessor`, Stage 3 aligns the model (`max_seq_length = 4,096`) using **Offline DPO** and **Online Group Relative Policy Optimization (GRPO, $G=4$ candidates per prompt)** driven by a 5-part composite reward:
 $$R_{\text{total}}(x, y) = 0.25 R_{\text{harmony}} + 0.20 R_{\text{scale}} + 0.20 R_{\text{groove}} + 0.20 R_{\text{prompt\_inst}} + 0.15 R_{\text{dynamics}}$$
 
 1. **Harmonic & Bar-Chord Consistency Critic ($R_{\text{harmony}}$):** Penalizes sustained minor-2nd / major-7th clashes between `[TRACK_BASS]` / `[TRACK_CHORDS]` / `[TRACK_MELODY]` and verifies pitched notes in `[BAR_k]` resolve against that bar's predicted `[CHORD_ROOT_*] [CHORD_QUAL_*]`.
@@ -257,9 +262,9 @@ $$R_{\text{total}}(x, y) = 0.25 R_{\text{harmony}} + 0.20 R_{\text{scale}} + 0.2
 ### Component E: Inference Backends, Sliding-Window Outpainting, DAW Exporter & Benchmark Suite (`src/inference/`, `src/utils/`)
 
 1. **Dual Inference Engine with LLM-CFG & Sliding-Window Outpainting (`generator.py`):**
-   * **HuggingFace Transformers & vLLM (`--fp8`) Backends:** Supports both single-prompt local generation and high-throughput batched generation.
+   * **HuggingFace Transformers & vLLM (`--fp8`) Backends:** Supports both single-prompt local generation and high-throughput batched generation up to `max_new_tokens = 4,090` natively.
    * **Classifier-Free Guidance (`--cfg_scale 1.8`):** Boosts prompt adherence and CLAP score out of the box.
-   * **Sliding-Window Long-Song Outpainting (`--bars 64`):** Generates arbitrarily long multi-section songs inside a 2,048-token context window by retaining `[Prompt Prefix] + [Bar 0..1 Theme Anchor] + [Most Recent 6 Bars]` across sliding generation windows.
+   * **Sliding-Window Long-Song Outpainting (`--bars 64+`):** Generates arbitrarily long multi-section songs beyond 32 bars by retaining `[Prompt Prefix] + [Bar 0..1 Theme Anchor] + [Most Recent 12 Bars]` across `4,096`-token sliding generation windows.
 2. **Studio-Grade SMF Type 1 Exporter (`exporter.py`):**
    * Outputs `mido.MidiFile(type=1, ticks_per_beat=480)` with Track 0 reserved for Tempo/Time-Signature/Section Marker meta-events, Channel 9 (DAW Channel 10) reserved for Drums, `CC64` sustain pedal events, 64 fine-grained GM `program_change` mappings, and automatic same-pitch overlap clipping (`note_off` inserted 1 tick prior to re-trigger).
 3. **Normalized Audio Preview (`audio_synth.py`):**
@@ -277,7 +282,7 @@ All dependency resolution, virtual environment management, and command execution
 * **CLI Entrypoint (`[project.scripts]`):** `midi-llm = "src.scripts.cli:app"` (or `uv run midi-llm ...`)
 * **Optional Dependency Groups:**
   * `core`: `torch`, `transformers`, `accelerate`, `peft`, `trl`, `datasets`, `mido`, `symusic`, `numpy`, `pyyaml`, `typer`, `rich`, `tqdm`
-  * `quant`: `bitsandbytes`, `vllm` (Linux/WSL2)
+  * `quant`: `bitsandbytes`, `liger-kernel`, `vllm` (Linux/WSL2)
   * `audio`: `midi2audio`, `librosa`, `soundfile`, `pyloudnorm`
   * `eval`: `frechet_audio_distance`, `laion_clap`
   * `amt`: `anticipation` (Stanford AMT 55k compatibility)
@@ -300,7 +305,7 @@ Configure `pytest` and `coverage` in `pyproject.toml` (`--cov=src --cov-branch -
 3. **`tests/test_grammar_fsm.py`:** Runs 256 steps of random logits through `MusicGrammarLogitsProcessor` and `ClassifierFreeGuidanceLogitsProcessor` (in both REMI-CoT and AMT triplet modes) and asserts 100% syntactically valid sequences.
 4. **`tests/test_transposition.py`:** Verifies that `transposition.py` shifts non-drum MIDI pitches, `[KEY_*]`, `[CHORD_ROOT_*]`, and natural language chord/key strings in the text prompt identically across $\Delta p \in [-5, +6]$ semitones without altering drum pitches.
 5. **`tests/test_cleaner_and_mir.py`:** Tests the anti-metronome filter, `has_excessive_notes_at_any_time` burst detector, 896-ID `evaluation_set_lakh_ids.txt` holdout filter, and Krumhansl-Schmuckler key detector.
-6. **`tests/test_infilling_mask.py`:** Verifies stem-infilling sequence construction, 10% CFG prompt dropout, and loss masking (`labels = -100` on prompt and conditioning context).
+6. **`tests/test_infilling_mask.py`:** Verifies stem-infilling sequence construction across `2,048` and `4,096` context lengths, Chunked Cross-Entropy equivalence against standard `F.cross_entropy`, 10% CFG prompt dropout, and loss masking (`labels = -100` on prompt and conditioning context).
 7. **`tests/test_music_critics.py`:** Verifies all 5 DPO/GRPO reward critics ($R_{\text{harmony}}, R_{\text{scale}}, R_{\text{groove}}, R_{\text{prompt\_inst}}, R_{\text{dynamics}}$) rank in-key, instrument-faithful grooves strictly higher than clashing or wrong-instrument sequences.
 8. **`tests/test_midi_export.py`:** Verifies exported `.mid` files are valid SMF Type 1, assign `[TRACK_DRUMS]` to Channel 9 (DAW Ch 10), write `CC64` pedal events, clip overlapping same-pitch notes cleanly, and leave zero hanging notes.
 
